@@ -23,12 +23,13 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-
       - name: Create .env file from Secrets
         run: |
-          echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
-          echo "SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
-          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
+          cat <<EOF > .env
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          EOF
 
       - name: Install dependencies
         run: flutter pub get
