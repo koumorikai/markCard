@@ -9,12 +9,21 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await dotenv.load(fileName: ".env");
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    debugPrint("Файл .env не найден или не удалось загрузить: $e");
+  }
 
-  await Supabase.initialize(
-    url: dotenv.env['SUPABASE_URL'] ?? '',
-    publishableKey: dotenv.env['SUPABASE_ANON_KEY'] ?? '',
-  );
+  final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
+  final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
+
+  if (supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty) {
+    await Supabase.initialize(
+      url: supabaseUrl,
+      anonKey: supabaseAnonKey,
+    );
+  }
 
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -79,11 +88,18 @@ class _AuthWrapperState extends State<AuthWrapper> {
   }
 
   Future<void> _checkAuth() async {
-    final session = supabase.auth.currentSession;
-    setState(() {
-      _isLoggedIn = session != null;
-      _isLoading = false;
-    });
+    try {
+      final session = supabase.auth.currentSession;
+      setState(() {
+        _isLoggedIn = session != null;
+        _isLoading = false;
+      });
+    } catch (_) {
+      setState(() {
+        _isLoggedIn = false;
+        _isLoading = false;
+      });
+    }
   }
 
   @override
@@ -256,8 +272,10 @@ Do not duplicate any of these existing terms: $existingConcepts.
       }
 
       String rawContent = choices[0]['message']['content'] ?? '';
-      rawContent =
-          rawContent.replaceAll('```json', '').replaceAll('```', '').trim();
+      rawContent = rawContent
+          .replaceAll('```json', '')
+          .replaceAll('```', '')
+          .trim();
 
       Map<String, dynamic> parsedJson;
       try {
@@ -501,52 +519,54 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     final user = supabase.auth.currentUser;
     if (user == null) return;
 
-    final now = DateTime.now();
-    final todayStr = now.toIso8601String().split('T')[0];
+    try {
+      final now = DateTime.now();
+      final todayStr = now.toIso8601String().split('T')[0];
 
-    final todayResponse = await supabase
-        .from('daily_progress')
-        .select()
-        .eq('user_id', user.id)
-        .eq('date', todayStr)
-        .maybeSingle();
+      final todayResponse = await supabase
+          .from('daily_progress')
+          .select()
+          .eq('user_id', user.id)
+          .eq('date', todayStr)
+          .maybeSingle();
 
-    final firstDayOfMonth =
-        DateTime(now.year, now.month, 1).toIso8601String().split('T')[0];
-    final monthRecords = await supabase
-        .from('daily_progress')
-        .select('date, words_count')
-        .eq('user_id', user.id)
-        .gte('date', firstDayOfMonth);
+      final firstDayOfMonth =
+          DateTime(now.year, now.month, 1).toIso8601String().split('T')[0];
+      final monthRecords = await supabase
+          .from('daily_progress')
+          .select('date, words_count')
+          .eq('user_id', user.id)
+          .gte('date', firstDayOfMonth);
 
-    final Set<int> activeDays = {};
-    for (var record in monthRecords) {
-      if ((record['words_count'] ?? 0) > 0) {
-        final date = DateTime.parse(record['date']);
-        activeDays.add(date.day);
+      final Set<int> activeDays = {};
+      for (var record in monthRecords) {
+        if ((record['words_count'] ?? 0) > 0) {
+          final date = DateTime.parse(record['date']);
+          activeDays.add(date.day);
+        }
       }
-    }
 
-    setState(() {
-      _activeDaysInMonth.clear();
-      _activeDaysInMonth.addAll(activeDays);
-      _streakDays = activeDays.length;
+      setState(() {
+        _activeDaysInMonth.clear();
+        _activeDaysInMonth.addAll(activeDays);
+        _streakDays = activeDays.length;
 
-      if (todayResponse != null) {
-        _wordsLearnedToday = todayResponse['words_count'] ?? 0;
-        _essayCompleted = todayResponse['essay_completed'] ?? false;
-        if (todayResponse['categories'] != null) {
-          _todayCategories.clear();
-          for (var cat in todayResponse['categories']) {
-            _todayCategories.add(cat.toString());
+        if (todayResponse != null) {
+          _wordsLearnedToday = todayResponse['words_count'] ?? 0;
+          _essayCompleted = todayResponse['essay_completed'] ?? false;
+          if (todayResponse['categories'] != null) {
+            _todayCategories.clear();
+            for (var cat in todayResponse['categories']) {
+              _todayCategories.add(cat.toString());
+            }
+          }
+          if (_todayCategories.isNotEmpty) {
+            _dailyEssay =
+                'На основе категорий за сегодня (${_todayCategories.join(', ')}): напиши короткое эссе.';
           }
         }
-        if (_todayCategories.isNotEmpty) {
-          _dailyEssay =
-              'На основе категорий за сегодня (${_todayCategories.join(', ')}): напиши короткое эссе.';
-        }
-      }
-    });
+      });
+    } catch (_) {}
   }
 
   Future<void> _onWordReviewed(String category) async {
@@ -566,12 +586,14 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 
     final todayStr = DateTime.now().toIso8601String().split('T')[0];
 
-    await supabase.from('daily_progress').upsert({
-      'user_id': user.id,
-      'date': todayStr,
-      'words_count': _wordsLearnedToday,
-      'categories': _todayCategories,
-    }, onConflict: 'user_id,date');
+    try {
+      await supabase.from('daily_progress').upsert({
+        'user_id': user.id,
+        'date': todayStr,
+        'words_count': _wordsLearnedToday,
+        'categories': _todayCategories,
+      }, onConflict: 'user_id,date');
+    } catch (_) {}
   }
 
   @override
@@ -817,8 +839,8 @@ class _MainReviewTabState extends State<MainReviewTab>
                 DropdownButtonFormField<String>(
                   value: sourceLang,
                   dropdownColor: const Color(0xFF13101E),
-                  decoration:
-                      const InputDecoration(labelText: 'Исходный язык (Front)'),
+                  decoration: const InputDecoration(
+                      labelText: 'Исходный язык (Front)'),
                   items: languages
                       .map((lang) =>
                           DropdownMenuItem(value: lang, child: Text(lang)))
@@ -929,8 +951,8 @@ class _MainReviewTabState extends State<MainReviewTab>
         backgroundColor: const Color(0xFF13101E),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side:
-              BorderSide(color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
+          side: BorderSide(
+              color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
         ),
         title: Text(
           'Предпросмотр (${generatedCards.length} карточек)',
@@ -1382,12 +1404,13 @@ class _EssayTabState extends State<EssayTab> {
           "messages": [
             {
               "role": "system",
-              "content": "You are a strict and objective AI instructor and linguistic mentor. "
-                  "Analyze the student's submitted essay and evaluate it according to the following criteria:\n"
-                  "1. Relevance to the question/topic (how accurately the topic is covered).\n"
-                  "2. Structure and logic (introduction, body paragraphs, conclusion).\n"
-                  "3. Grammar and vocabulary (errors, style).\n\n"
-                  "Provide constructive feedback in Russian, highlight strengths and areas for growth, and give an approximate score from 1 to 10."
+              "content":
+                  "You are a strict and objective AI instructor and linguistic mentor. "
+                      "Analyze the student's submitted essay and evaluate it according to the following criteria:\n"
+                      "1. Relevance to the question/topic (how accurately the topic is covered).\n"
+                      "2. Structure and logic (introduction, body paragraphs, conclusion).\n"
+                      "3. Grammar and vocabulary (errors, style).\n\n"
+                      "Provide constructive feedback in Russian, highlight strengths and areas for growth, and give an approximate score from 1 to 10."
             },
             {
               "role": "user",
@@ -1446,8 +1469,8 @@ class _EssayTabState extends State<EssayTab> {
         backgroundColor: const Color(0xFF13101E),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side:
-              BorderSide(color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
+          side: BorderSide(
+              color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
         ),
         title: const Row(
           children: [
