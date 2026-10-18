@@ -92,6 +92,12 @@
       "languageVersion": "3.4"
     },
     {
+      "name": "cupertino_icons",
+      "rootUri": "file:///C:/Users/User/AppData/Local/Pub/Cache/hosted/pub.dev/cupertino_icons-1.0.9",
+      "packageUri": "lib/",
+      "languageVersion": "3.9"
+    },
+    {
       "name": "dart_jsonwebtoken",
       "rootUri": "file:///C:/Users/User/AppData/Local/Pub/Cache/hosted/pub.dev/dart_jsonwebtoken-3.4.1",
       "packageUri": "lib/",

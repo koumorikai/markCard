@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -6,30 +7,39 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() {
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    await dotenv.load(fileName: ".env");
-  } catch (e) {
-    debugPrint("Файл .env не найден или не удалось загрузить: $e");
-  }
+    try {
+      await dotenv.load(fileName: ".env");
+    } catch (e) {
+      debugPrint("Файл .env не загружен: $e");
+    }
 
-  final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
-  final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
+    final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
+    final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
 
-  if (supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty) {
-    await Supabase.initialize(
-      url: supabaseUrl,
-      anonKey: supabaseAnonKey,
-    );
-  }
+    if (supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty) {
+      try {
+        await Supabase.initialize(
+          url: supabaseUrl,
+          anonKey: supabaseAnonKey,
+        );
+      } catch (e) {
+        debugPrint("Ошибка инициализации Supabase: $e");
+      }
+    }
 
-  SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
-  runApp(const MarkCardApp());
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+
+    runApp(const MarkCardApp());
+  }, (error, stack) {
+    debugPrint("Глобальная ошибка: $error");
+  });
 }
 
 final supabase = Supabase.instance.client;
@@ -58,7 +68,7 @@ class MarkCardApp extends StatelessWidget {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
             side: BorderSide(
-              color: const Color(0xFF7C3AED).withValues(alpha: 0.25),
+              color: const Color(0xFF7C3AED).withOpacity(0.25),
               width: 1.0,
             ),
           ),
@@ -106,6 +116,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(
+        backgroundColor: Color(0xFF0D0B14),
         body: Center(
           child: CircularProgressIndicator(color: Color(0xFF7C3AED)),
         ),
@@ -157,28 +168,8 @@ class GroqService {
   static String _buildSystemPrompt() {
     return '''
 You are the AI flashcard generation engine for MarkCard.
-
-Your task is to create exactly 20 high-quality educational
-flashcards for the topic provided by the user.
-
-Generation requirements:
-
-1. Generate exactly 20 flashcards.
-2. Every flashcard must teach one distinct learning objective.
-3. Avoid duplicate and nearly identical flashcards.
-4. Use the requested source language for the front field.
-5. Use the requested target language for the back field.
-6. Provide an accurate, concise, and useful definition or translation.
-7. Include a relevant contextual example in every card.
-8. Adapt the complexity to the requested difficulty.
-9. Do not invent facts or provide misleading definitions.
-10. Avoid unnecessary information and excessively long explanations.
-11. Return valid JSON only.
-12. Do not include Markdown fences or introductory text.
-13. Do not include properties outside the required schema.
-
-Return this exact JSON structure:
-
+Your task is to create exactly 20 high-quality educational flashcards for the topic provided by the user.
+Return valid JSON only in this exact structure:
 {
   "flashcards": [
     {
@@ -188,13 +179,6 @@ Return this exact JSON structure:
     }
   ]
 }
-
-The flashcards array must contain exactly 20 objects.
-
-All three properties must be non-empty strings.
-Every card must be meaningfully different from the others.
-
-Return only the JSON object.
 ''';
   }
 
@@ -211,7 +195,6 @@ Return only the JSON object.
 
     final List<Flashcard> validCards = [];
     final Set<String> seenFronts = {};
-
     int attempts = 0;
     const int maxAttempts = 3;
 
@@ -219,27 +202,13 @@ Return only the JSON object.
       attempts++;
       final neededCount = _targetCardCount - validCards.length;
 
-      String userPrompt;
-      if (validCards.isEmpty) {
-        userPrompt = '''
+      String userPrompt = '''
 Topic: $topic
 Source Language: $sourceLanguage
 Target Language: $targetLanguage
 Difficulty: $difficulty
-Generate exactly $_targetCardCount flashcards.
+Generate exactly $neededCount flashcards.
 ''';
-      } else {
-        final existingConcepts =
-            validCards.map((c) => c.front).take(15).join(', ');
-        userPrompt = '''
-Topic: $topic
-Source Language: $sourceLanguage
-Target Language: $targetLanguage
-Difficulty: $difficulty
-Generate exactly $neededCount additional unique flashcards.
-Do not duplicate any of these existing terms: $existingConcepts.
-''';
-      }
 
       final response = await http
           .post(
@@ -267,27 +236,21 @@ Do not duplicate any of these existing terms: $existingConcepts.
 
       final decodedResponse = jsonDecode(utf8.decode(response.bodyBytes));
       final choices = decodedResponse['choices'] as List?;
-      if (choices == null || choices.isEmpty) {
-        throw Exception('Groq API вернул пустой ответ');
-      }
+      if (choices == null || choices.isEmpty) continue;
 
       String rawContent = choices[0]['message']['content'] ?? '';
-      rawContent = rawContent
-          .replaceAll('```json', '')
-          .replaceAll('```', '')
-          .trim();
+      rawContent =
+          rawContent.replaceAll('```json', '').replaceAll('```', '').trim();
 
       Map<String, dynamic> parsedJson;
       try {
         parsedJson = jsonDecode(rawContent);
-      } catch (e) {
-        throw Exception('Не удалось разобрать JSON ответа Groq');
+      } catch (_) {
+        continue;
       }
 
       final cardsArray = parsedJson['flashcards'] as List?;
-      if (cardsArray == null) {
-        continue;
-      }
+      if (cardsArray == null) continue;
 
       for (var item in cardsArray) {
         if (item is Map<String, dynamic> && _isValidCard(item)) {
@@ -311,8 +274,7 @@ Do not duplicate any of these existing terms: $existingConcepts.
     }
 
     if (validCards.length < _targetCardCount) {
-      throw Exception(
-          'Не удалось сгенерировать ровно 20 уникальных карточек (получено ${validCards.length}). Попробуйте еще раз.');
+      throw Exception('Не удалось сгенерировать ровно 20 уникальных карточек.');
     }
 
     return validCards.sublist(0, _targetCardCount);
@@ -328,11 +290,9 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   bool _isSignUp = true;
-
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _nicknameController = TextEditingController();
-
   bool _isLoading = false;
 
   Future<void> _submit() async {
@@ -343,9 +303,7 @@ class _AuthScreenState extends State<AuthScreen> {
       final nickname = _nicknameController.text.trim();
 
       if (_isSignUp) {
-        if (nickname.isEmpty) {
-          throw 'Введите уникальный никнейм!';
-        }
+        if (nickname.isEmpty) throw 'Введите уникальный никнейм!';
 
         final response = await supabase.auth.signUp(
           email: email,
@@ -379,9 +337,9 @@ class _AuthScreenState extends State<AuthScreen> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-            content:
-                Text('Ошибка: ${e.toString().replaceAll('Exception: ', '')}'),
-            backgroundColor: Colors.redAccent),
+          content: Text('Ошибка: ${e.toString().replaceAll('Exception: ', '')}'),
+          backgroundColor: Colors.redAccent,
+        ),
       );
     } finally {
       setState(() => _isLoading = false);
@@ -391,6 +349,7 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFF0D0B14),
       body: Center(
         child: Container(
           constraints: const BoxConstraints(maxWidth: 400),
@@ -499,11 +458,9 @@ class MainNavigationScreen extends StatefulWidget {
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _selectedIndex = 0;
-
   int _streakDays = 0;
   int _wordsLearnedToday = 0;
   final Set<int> _activeDaysInMonth = {};
-
   final List<String> _todayCategories = ['Business IT'];
   String _dailyEssay =
       'Напиши размышление о технологиях на основе изученных тем.';
@@ -516,10 +473,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 
   Future<void> _loadUserProgress() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return;
-
     try {
+      final user = supabase.auth.currentUser;
+      if (user == null) return;
+
       final now = DateTime.now();
       final todayStr = now.toIso8601String().split('T')[0];
 
@@ -570,23 +527,23 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   }
 
   Future<void> _onWordReviewed(String category) async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return;
-
-    setState(() {
-      _wordsLearnedToday++;
-      if (!_todayCategories.contains(category)) {
-        _todayCategories.add(category);
-        _dailyEssay =
-            'На основе категорий за сегодня (${_todayCategories.join(', ')}): напиши короткое эссе.';
-      }
-      _activeDaysInMonth.add(DateTime.now().day);
-      _streakDays = _activeDaysInMonth.length;
-    });
-
-    final todayStr = DateTime.now().toIso8601String().split('T')[0];
-
     try {
+      final user = supabase.auth.currentUser;
+      if (user == null) return;
+
+      setState(() {
+        _wordsLearnedToday++;
+        if (!_todayCategories.contains(category)) {
+          _todayCategories.add(category);
+          _dailyEssay =
+              'На основе категорий за сегодня (${_todayCategories.join(', ')}): напиши короткое эссе.';
+        }
+        _activeDaysInMonth.add(DateTime.now().day);
+        _streakDays = _activeDaysInMonth.length;
+      });
+
+      final todayStr = DateTime.now().toIso8601String().split('T')[0];
+
       await supabase.from('daily_progress').upsert({
         'user_id': user.id,
         'date': todayStr,
@@ -623,11 +580,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
-              Color(0xFF0D0B14),
-              Color(0xFF160F2B),
-              Color(0xFF3B1863),
-            ],
+            colors: [Color(0xFF0D0B14), Color(0xFF160F2B), Color(0xFF3B1863)],
             stops: [0.0, 0.55, 1.0],
           ),
         ),
@@ -635,21 +588,20 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF0D0B14).withValues(alpha: 0.95),
+          color: const Color(0xFF0D0B14).withOpacity(0.95),
           border: Border(
             top: BorderSide(
-              color: const Color(0xFF7C3AED).withValues(alpha: 0.3),
+              color: const Color(0xFF7C3AED).withOpacity(0.3),
               width: 1,
             ),
           ),
         ),
         child: NavigationBar(
           selectedIndex: _selectedIndex,
-          onDestinationSelected: (index) {
-            setState(() => _selectedIndex = index);
-          },
+          onDestinationSelected: (index) =>
+              setState(() => _selectedIndex = index),
           backgroundColor: Colors.transparent,
-          indicatorColor: const Color(0xFF7C3AED).withValues(alpha: 0.3),
+          indicatorColor: const Color(0xFF7C3AED).withOpacity(0.3),
           destinations: const [
             NavigationDestination(
               icon: Icon(Icons.home_outlined, color: Color(0xFF9CA3AF)),
@@ -669,8 +621,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
               label: 'Эссе',
             ),
             NavigationDestination(
-              icon:
-                  Icon(Icons.person_outline_rounded, color: Color(0xFF9CA3AF)),
+              icon: Icon(Icons.person_outline_rounded, color: Color(0xFF9CA3AF)),
               selectedIcon:
                   Icon(Icons.person_rounded, color: Color(0xFFA78BFA)),
               label: 'Профиль',
@@ -706,22 +657,6 @@ class _MainReviewTabState extends State<MainReviewTab>
       back: 'Приложение с генерацией карточек через Groq AI и базой Supabase.',
       contextExample: 'Строгий минималистичный дизайн.',
       category: 'О приложении',
-    ),
-    Flashcard(
-      id: 'intro_3',
-      front: '📖 Инструкция по использованию',
-      back:
-          '1. Нажми на ✨ вверху, чтобы сгенерировать 20 карточек по любой теме через ИИ.\n2. Переворачивай карточки тапом.\n3. Пиши ежедневное эссе во вкладке «Эссе».',
-      contextExample: 'Учись каждый день, чтобы растить свою серию 🔥',
-      category: 'Инструкция',
-    ),
-    Flashcard(
-      id: 'intro_4',
-      front: '🌐 Наши Социальные сети',
-      back:
-          'Следи за обновлениями проекта, делись фидбеком и присоединяйся к нашему сообществу разработчиков!',
-      contextExample: 'Telegram: @markelxvvv\nGitHub: github.com/koumorikai',
-      category: 'Сообщество',
     ),
   ];
 
@@ -804,8 +739,7 @@ class _MainReviewTabState extends State<MainReviewTab>
           backgroundColor: const Color(0xFF13101E),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: BorderSide(
-                color: const Color(0xFF7C3AED).withValues(alpha: 0.3)),
+            side: BorderSide(color: const Color(0xFF7C3AED).withOpacity(0.3)),
           ),
           title: const Row(
             children: [
@@ -828,7 +762,7 @@ class _MainReviewTabState extends State<MainReviewTab>
                     labelStyle: const TextStyle(color: Color(0xFF9CA3AF)),
                     hintText: 'Напр. English Idioms, Data Structures',
                     hintStyle:
-                        TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+                        TextStyle(color: Colors.white.withOpacity(0.3)),
                     focusedBorder: const UnderlineInputBorder(
                       borderSide:
                           BorderSide(color: Color(0xFF7C3AED), width: 2),
@@ -951,8 +885,7 @@ class _MainReviewTabState extends State<MainReviewTab>
         backgroundColor: const Color(0xFF13101E),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(
-              color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
+          side: BorderSide(color: const Color(0xFF7C3AED).withOpacity(0.4)),
         ),
         title: Text(
           'Предпросмотр (${generatedCards.length} карточек)',
@@ -1010,11 +943,8 @@ class _MainReviewTabState extends State<MainReviewTab>
 
   @override
   Widget build(BuildContext context) {
-    if (_deck.isEmpty) {
-      return const Scaffold(body: Center(child: Text('Колода пуста')));
-    }
     final currentCard = _deck[_currentIndex];
-    final bool isIntroCard = _currentIndex < 4;
+    final bool isIntroCard = _currentIndex < 2;
 
     return SafeArea(
       child: Column(
@@ -1073,12 +1003,11 @@ class _MainReviewTabState extends State<MainReviewTab>
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 16, vertical: 6),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF7C3AED)
-                                  .withValues(alpha: 0.2),
+                              color: const Color(0xFF7C3AED).withOpacity(0.2),
                               borderRadius: BorderRadius.circular(16),
                               border: Border.all(
                                   color: const Color(0xFF7C3AED)
-                                      .withValues(alpha: 0.4)),
+                                      .withOpacity(0.4)),
                             ),
                             child: Text(
                               '${currentCard.category} (${_currentIndex + 1}/${_deck.length})',
@@ -1130,7 +1059,7 @@ class _MainReviewTabState extends State<MainReviewTab>
                               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                               children: [
                                 _buildNavigationButton('Назад', _prevCard),
-                                Text('${_currentIndex + 1} / 4',
+                                Text('${_currentIndex + 1} / ${_deck.length}',
                                     style: const TextStyle(
                                         color: Color(0xFF9CA3AF))),
                                 _buildNavigationButton(
@@ -1164,20 +1093,6 @@ class _MainReviewTabState extends State<MainReviewTab>
   }
 
   Widget _buildCardContent(String text, String? example, bool isBackSide) {
-    bool hasEmojiPrefix = text.startsWith('🌐') ||
-        text.startsWith('📖') ||
-        text.startsWith('⚡') ||
-        text.startsWith('🔮');
-
-    String titleText = text;
-    String? emojiPart;
-
-    if (hasEmojiPrefix) {
-      List<String> parts = text.split(' ');
-      emojiPart = parts[0];
-      titleText = text.substring(emojiPart.length).trim();
-    }
-
     return Container(
       width: double.infinity,
       height: double.infinity,
@@ -1189,44 +1104,22 @@ class _MainReviewTabState extends State<MainReviewTab>
           crossAxisAlignment: CrossAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (hasEmojiPrefix && emojiPart != null) ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(emojiPart, style: const TextStyle(fontSize: 24)),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      titleText,
-                      style: const TextStyle(
-                          fontSize: 21,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFFF9FAFB),
-                          height: 1.3),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ],
-              ),
-            ] else ...[
-              Text(
-                text,
-                style: const TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFFF9FAFB),
-                    height: 1.3),
-                textAlign: TextAlign.center,
-              ),
-            ],
+            Text(
+              text,
+              style: const TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFFF9FAFB),
+                  height: 1.3),
+              textAlign: TextAlign.center,
+            ),
             if (example != null && example.isNotEmpty) ...[
               const SizedBox(height: 20),
               Text(
                 example,
                 style: TextStyle(
                     fontSize: 14,
-                    color: const Color(0xFFF9FAFB).withValues(alpha: 0.65),
+                    color: const Color(0xFFF9FAFB).withOpacity(0.65),
                     fontStyle: FontStyle.italic),
                 textAlign: TextAlign.center,
               ),
@@ -1240,7 +1133,7 @@ class _MainReviewTabState extends State<MainReviewTab>
   Widget _buildNavigationButton(String label, VoidCallback onPressed) {
     return ElevatedButton(
       style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFF7C3AED).withValues(alpha: 0.15),
+        backgroundColor: const Color(0xFF7C3AED).withOpacity(0.15),
         foregroundColor: const Color(0xFFA78BFA),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
@@ -1252,7 +1145,7 @@ class _MainReviewTabState extends State<MainReviewTab>
   Widget _buildActionButton(String text, Color color, VoidCallback onPressed) {
     return ElevatedButton(
       style: ElevatedButton.styleFrom(
-        backgroundColor: color.withValues(alpha: 0.12),
+        backgroundColor: color.withOpacity(0.12),
         foregroundColor: color,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
@@ -1268,12 +1161,13 @@ class StreakTab extends StatelessWidget {
   final Set<int> activeDays;
   final String congratulationText;
 
-  const StreakTab(
-      {super.key,
-      required this.streakDays,
-      required this.wordsToday,
-      required this.activeDays,
-      required this.congratulationText});
+  const StreakTab({
+    super.key,
+    required this.streakDays,
+    required this.wordsToday,
+    required this.activeDays,
+    required this.congratulationText,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1405,12 +1299,7 @@ class _EssayTabState extends State<EssayTab> {
             {
               "role": "system",
               "content":
-                  "You are a strict and objective AI instructor and linguistic mentor. "
-                      "Analyze the student's submitted essay and evaluate it according to the following criteria:\n"
-                      "1. Relevance to the question/topic (how accurately the topic is covered).\n"
-                      "2. Structure and logic (introduction, body paragraphs, conclusion).\n"
-                      "3. Grammar and vocabulary (errors, style).\n\n"
-                      "Provide constructive feedback in Russian, highlight strengths and areas for growth, and give an approximate score from 1 to 10."
+                  "You are a strict and objective AI instructor and linguistic mentor. Analyze the student's submitted essay and provide constructive feedback in Russian with a score from 1 to 10."
             },
             {
               "role": "user",
@@ -1469,8 +1358,7 @@ class _EssayTabState extends State<EssayTab> {
         backgroundColor: const Color(0xFF13101E),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(
-              color: const Color(0xFF7C3AED).withValues(alpha: 0.4)),
+          side: BorderSide(color: const Color(0xFF7C3AED).withOpacity(0.4)),
         ),
         title: const Row(
           children: [
@@ -1536,8 +1424,7 @@ class _EssayTabState extends State<EssayTab> {
                 hintText: widget.isCompleted
                     ? 'Эссе уже сдано и проверено!'
                     : 'Напиши свое эссе здесь...',
-                hintStyle:
-                    TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+                hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
                 filled: true,
                 fillColor: const Color(0xFF13101E),
                 border:
@@ -1614,7 +1501,7 @@ class ProfileTab extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
               decoration: BoxDecoration(
-                color: const Color(0xFF7C3AED).withValues(alpha: 0.2),
+                color: const Color(0xFF7C3AED).withOpacity(0.2),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
@@ -1627,7 +1514,7 @@ class ProfileTab extends StatelessWidget {
               width: double.infinity,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent.withValues(alpha: 0.15),
+                  backgroundColor: Colors.redAccent.withOpacity(0.15),
                   foregroundColor: Colors.redAccent,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
